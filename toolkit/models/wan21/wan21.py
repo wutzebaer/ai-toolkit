@@ -43,7 +43,7 @@ from diffusers.pipelines.wan.pipeline_wan import XLA_AVAILABLE
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from typing import Any, Callable, Dict, List, Optional, Union
 from toolkit.models.wan21.wan_lora_convert import convert_to_diffusers, convert_to_original
-from toolkit.util.quantize import quantize_model
+from toolkit.util.quantize import quantize_model, try_load_quantized_transformer
 from toolkit.models.loaders.umt5 import get_umt5_encoder
 
 # for generation only?
@@ -344,18 +344,22 @@ class Wan21(BaseModel):
     def load_wan_transformer(self, transformer_path, subfolder=None):
         self.print_and_status_update("Loading transformer")
         dtype = self.torch_dtype
-        transformer = WanTransformer3DModel.from_pretrained(
-            transformer_path,
-            subfolder=subfolder,
-            torch_dtype=dtype,
-        ).to(dtype=dtype)
+
+        transformer, from_cache = try_load_quantized_transformer(
+            WanTransformer3DModel, transformer_path, subfolder, self.model_config
+        )
+        if not from_cache:
+            transformer = WanTransformer3DModel.from_pretrained(
+                transformer_path,
+                subfolder=subfolder,
+                torch_dtype=dtype,
+            ).to(dtype=dtype)
 
         if self.model_config.split_model_over_gpus:
             raise ValueError(
                 "Splitting model over gpus is not supported for Wan2.1 models")
 
         if self.model_config.low_vram:
-            # quantize on the device
             transformer.to('cpu', dtype=dtype)
             flush()
         else:
@@ -372,9 +376,9 @@ class Wan21(BaseModel):
 
         flush()
         
-        if self.model_config.quantize:
+        if self.model_config.quantize and not from_cache:
             self.print_and_status_update("Quantizing Transformer")
-            quantize_model(self, transformer)
+            quantize_model(self, transformer, transformer_path, subfolder)
             flush()
         
         if self.model_config.layer_offloading and self.model_config.layer_offloading_transformer_percent > 0:

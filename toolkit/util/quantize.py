@@ -1,21 +1,25 @@
+import hashlib
+import os
 from fnmatch import fnmatch
-from typing import List, Optional, Union, TYPE_CHECKING
-import torch
+from typing import TYPE_CHECKING, List, Optional, Union
 
+import torch
+from huggingface_hub import hf_hub_download
+from optimum.quanto import freeze
 from optimum.quanto.quantize import _quantize_submodule
 from optimum.quanto.tensor import Optimizer, qtype, qtypes
+from safetensors.torch import load_file
 from torchao.quantization.quant_api import (
-    quantize_ as torchao_quantize_,
     Float8WeightOnlyConfig,
     UIntXWeightOnlyConfig,
 )
-from optimum.quanto import freeze
+from torchao.quantization.quant_api import (
+    quantize_ as torchao_quantize_,
+)
 from tqdm import tqdm
-from safetensors.torch import load_file
-from huggingface_hub import hf_hub_download
 
+from toolkit.paths import TOOLKIT_ROOT
 from toolkit.print import print_acc
-import os
 
 if TYPE_CHECKING:
     from toolkit.models.base_model import BaseModel
@@ -126,9 +130,103 @@ def quantize(
             # raise e
 
 
+def _load_quantized_cache(
+    model: torch.nn.Module,
+    cached_sd: dict,
+    quantization_type,
+):
+    from accelerate import init_empty_weights
+    from optimum.quanto.nn import QModuleMixin
+    from optimum.quanto.tensor import QBytesTensor
+
+    with init_empty_weights():
+        quantize(model, weights=quantization_type)
+
+    for name, module in model.named_modules():
+        if not isinstance(module, QModuleMixin):
+            continue
+        data_key = f"{name}.weight._data"
+        scale_key = f"{name}.weight._scale"
+        if data_key not in cached_sd or scale_key not in cached_sd:
+            continue
+        data = cached_sd[data_key]
+        scale = cached_sd[scale_key]
+        qtensor = QBytesTensor(
+            qtype=quantization_type,
+            axis=0,
+            size=module.weight.shape,
+            stride=module.weight.stride(),
+            data=data,
+            scale=scale,
+        )
+        module.weight = torch.nn.Parameter(qtensor, requires_grad=False)
+
+    # Load non-quantized parameters (norms, biases, embeddings, etc.)
+    non_quant_sd = {
+        k: v for k, v in cached_sd.items()
+        if '._data' not in k and '._scale' not in k
+    }
+    model.load_state_dict(non_quant_sd, strict=False, assign=True)
+
+
+def _get_quantize_cache_path(model_path: str, qtype_name: str, subfolder: Optional[str] = None) -> str:
+    key = f"{model_path}|{subfolder or ''}|{qtype_name}"
+    hash_key = hashlib.md5(key.encode()).hexdigest()[:16]
+    cache_dir = os.path.join(TOOLKIT_ROOT, ".cache", "quantized")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"quantized_{hash_key}.pt")
+
+
+def try_load_quantized_transformer(
+    model_class,
+    model_path: str,
+    subfolder: Optional[str],
+    model_config,
+) -> tuple:
+    """Try to load a quantized transformer from cache.
+
+    Returns (model, True) on cache hit, (None, False) on cache miss.
+    On cache hit the returned model is fully quantized and ready to use.
+    """
+
+    if not model_config.quantize:
+        return None, False
+    if model_config.accuracy_recovery_adapter is not None:
+        return None, False
+
+    cache_path = _get_quantize_cache_path(
+        model_path, model_config.qtype, subfolder
+    )
+    if not os.path.exists(cache_path):
+        return None, False
+
+    from accelerate import init_empty_weights
+
+    from toolkit.dequantize import patch_dequantization_on_save
+
+    try:
+        print_acc("Loading quantized transformer from cache (skipping from_pretrained)")
+        config = model_class.load_config(model_path, subfolder=subfolder)
+        with init_empty_weights():
+            model = model_class.from_config(config)
+        cached_sd = torch.load(cache_path, map_location='cpu', weights_only=True)
+        quantization_type = get_qtype(model_config.qtype)
+        _load_quantized_cache(model, cached_sd, quantization_type)
+        del cached_sd
+        patch_dequantization_on_save(model)
+        return model, True
+    except Exception as e:
+        print_acc(f"Failed to load quantized cache, falling back to from_pretrained: {e}")
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        return None, False
+
+
 def quantize_model(
     base_model: "BaseModel",
     model_to_quantize: torch.nn.Module,
+    model_path: Optional[str] = None,
+    subfolder: Optional[str] = None,
 ):
     from toolkit.dequantize import patch_dequantization_on_save
 
@@ -289,6 +387,11 @@ def quantize_model(
         )
     else:
         # quantize model the original way without an accuracy recovery adapter
+        cache_path = _get_quantize_cache_path(
+            model_path or base_model.model_config.name_or_path_original,
+            base_model.model_config.qtype,
+            subfolder,
+        )
         # move and quantize only certain pieces at a time.
         quantization_type = get_qtype(base_model.model_config.qtype)
         # all_blocks = list(model_to_quantize.transformer_blocks)
@@ -313,3 +416,8 @@ def quantize_model(
         # model_to_quantize.to(base_model.device_torch, dtype=base_model.torch_dtype)
         quantize(model_to_quantize, weights=quantization_type)
         freeze(model_to_quantize)
+
+        base_model.print_and_status_update(" - caching quantized model for future runs")
+        raw_sd = model_to_quantize.orig_state_dict()
+        torch.save(raw_sd, cache_path)
+        del raw_sd

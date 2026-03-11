@@ -15,7 +15,7 @@ from toolkit.config_modules import GenerateImageConfig, ModelConfig
 from toolkit.samplers.custom_flowmatch_sampler import (
     CustomFlowMatchEulerDiscreteScheduler,
 )
-from toolkit.util.quantize import quantize_model
+from toolkit.util.quantize import quantize_model, try_load_quantized_transformer
 from .wan22_pipeline import Wan22Pipeline
 from diffusers import WanTransformer3DModel
 
@@ -281,26 +281,30 @@ class Wan2214bModel(Wan21):
 
         self.print_and_status_update("Loading transformer 1")
         dtype = self.torch_dtype
-        transformer_1 = WanTransformer3DModel.from_pretrained(
-            transformer_path_1,
-            subfolder=subfolder_1,
-            torch_dtype=dtype,
-        ).to(dtype=dtype)
+
+        transformer_1, from_cache_1 = try_load_quantized_transformer(
+            WanTransformer3DModel, transformer_path_1, subfolder_1, self.model_config
+        )
+        if not from_cache_1:
+            transformer_1 = WanTransformer3DModel.from_pretrained(
+                transformer_path_1,
+                subfolder=subfolder_1,
+                torch_dtype=dtype,
+            ).to(dtype=dtype)
 
         flush()
 
         if self.model_config.low_vram:
-            # quantize on the device
             transformer_1.to('cpu', dtype=dtype)
             flush()
         else:
             transformer_1.to(self.device_torch, dtype=dtype)
             flush()
 
-        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
+        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None and not from_cache_1:
             # todo handle two ARAs
             self.print_and_status_update("Quantizing Transformer 1")
-            quantize_model(self, transformer_1)
+            quantize_model(self, transformer_1, transformer_path_1, subfolder_1)
             flush()
 
         if self.model_config.low_vram:
@@ -311,26 +315,30 @@ class Wan2214bModel(Wan21):
 
         self.print_and_status_update("Loading transformer 2")
         dtype = self.torch_dtype
-        transformer_2 = WanTransformer3DModel.from_pretrained(
-            transformer_path_2,
-            subfolder=subfolder_2,
-            torch_dtype=dtype,
-        ).to(dtype=dtype)
+
+        transformer_2, from_cache_2 = try_load_quantized_transformer(
+            WanTransformer3DModel, transformer_path_2, subfolder_2, self.model_config
+        )
+        if not from_cache_2:
+            transformer_2 = WanTransformer3DModel.from_pretrained(
+                transformer_path_2,
+                subfolder=subfolder_2,
+                torch_dtype=dtype,
+            ).to(dtype=dtype)
 
         flush()
 
         if self.model_config.low_vram:
-            # quantize on the device
             transformer_2.to('cpu', dtype=dtype)
             flush()
         else:
             transformer_2.to(self.device_torch, dtype=dtype)
             flush()
 
-        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
+        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None and not from_cache_2:
             # todo handle two ARAs
             self.print_and_status_update("Quantizing Transformer 2")
-            quantize_model(self, transformer_2)
+            quantize_model(self, transformer_2, transformer_path_2, subfolder_2)
             flush()
 
         if self.model_config.low_vram:
