@@ -164,7 +164,7 @@ cython_debug/
 
 /env.sh
 /models
-/datasets
+/datasets/p*
 /custom/*
 !/custom/.gitkeep
 /.tmp

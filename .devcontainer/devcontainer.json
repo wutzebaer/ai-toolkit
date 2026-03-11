@@ -1,0 +1,49 @@
+{
+  "name": "Python TensorFlow GPU",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "forwardPorts": [
+    8675
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "esbenp.prettier-vscode",
+        "natqe.reload",
+        "charliermarsh.ruff",
+        "alphabotsec.vscode-eclipse-keybindings",
+        "mhutchie.git-graph",
+        "redhat.vscode-xml",
+        "ms-azuretools.vscode-docker",
+        "Gruntfuggly.todo-tree"
+      ],
+      "settings": {
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+  "runArgs": [
+    "--gpus=all",
+    "--ipc=host"
+  ],
+  "mounts": [
+    "type=volume,source=pip-cache,target=/root/.cache/pip",
+    "type=volume,source=uv-cache,target=/root/.cache/uv",
+    "type=volume,source=cursor-server-cache,target=/root/.cursor-server",
+    "type=volume,source=site-packages-cache,target=/opt/venv/lib/python3.12/site-packages",
+    "type=bind,source=\\\\wsl.localhost\\Ubuntu\\mnt\\wsl\\GWSLDatafastdatanewvhdx\\huggingface,target=/root/.cache/huggingface"
+  ],
+  "containerEnv": {
+    "PYTHONPATH": "/workspaces/ComfyUI",
+    "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "600",
+    "PYTHONFAULTHANDLER": "1",
+    "UV_HTTP_TIMEOUT": "600",
+    "PIP_NO_BUILD_ISOLATION": "0"
+  },
+  "postStartCommand": "chmod +x .devcontainer/*.sh && .devcontainer/init.sh"
+}

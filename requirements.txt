@@ -1,4 +1,4 @@
-torchao==0.10.0
+torchao
 safetensors
 git+https://github.com/huggingface/diffusers@8600b4c10d67b0ce200f664204358747bd53c775
 transformers==4.57.3
@@ -35,7 +35,7 @@ python-slugify
 opencv-python
 pytorch-wavelets==1.3.0
 matplotlib==3.10.1
-setuptools==69.5.1
+setuptools
 scipy==1.12.0
 av==16.0.1
 torchcodec
